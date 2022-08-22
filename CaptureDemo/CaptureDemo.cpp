@@ -19,8 +19,10 @@
 #pragma comment(lib,"strmiids.lib")
 #pragma comment(lib,"strmbase.lib")
 
-#define DEFAULT_VIDEO_WIDTH     640
-#define DEFAULT_VIDEO_HEIGHT    480
+#define DEFAULT_VIDEO_WIDTH     1280
+#define DEFAULT_VIDEO_HEIGHT    1024
+
+#define JM_TOF_DEPTHDATA_LENGTH		240*180*10
 
 // this object is a SEMI-COM object, and can only be created statically.
 
@@ -41,7 +43,6 @@ IBaseFilter *pGrabberStill = NULL;
 ISampleGrabber *pSampleGrabberStill = NULL;
 IBaseFilter *pNull = NULL;
 
-
 //抓拍回调
 class CSampleGrabberCB : public ISampleGrabberCB 
 {
@@ -53,6 +54,9 @@ public:
 	HANDLE BufferEvent;
 	LONGLONG prev, step;
 	DWORD lastTime;
+
+	bool OneShot = true;
+
 	// Fake out any COM ref counting
 	STDMETHODIMP_(ULONG) AddRef() { return 2; }
 	STDMETHODIMP_(ULONG) Release() { return 1; }
@@ -82,13 +86,48 @@ public:
 
 	STDMETHODIMP BufferCB( double SampleTime, BYTE * pBuffer, long BufferSize )
 	{
-		//TODO 数据格式为YUY2，需要转换
-		char FileName[256];
-		sprintf_s(FileName, "capture_%d.yuv", (int)GetTickCount());
-		FILE * out = fopen(FileName, "wb");
-		fwrite(pBuffer, 1, BufferSize, out);
-		fclose(out);
+#if 0
+		int i;
+		for (i = 0; i < 4; i++)
+			printf("%02x ", pBuffer[i]);
+		printf("\t");
+		for (i = 0; i < 4; i++)
+			printf("%02x ", pBuffer[JM_TOF_DEPTHDATA_LENGTH+i]);
+		printf("\t");
+		printf("size=%d\n", BufferSize);
 		return 0;
+#else
+		//数据格式: TOF + MJPG
+		char FileName[256];
+
+		if (OneShot)
+		{
+			FILE* out;
+			int mjpgSize = BufferSize - JM_TOF_DEPTHDATA_LENGTH;
+
+			sprintf_s(FileName, "capture_%d.jpg", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer, 1, mjpgSize, out);
+			fclose(out);
+
+			sprintf_s(FileName, "capture_tof_%d.rgb", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer+ mjpgSize, 1, JM_TOF_DEPTHDATA_LENGTH, out);
+			fclose(out);
+
+			int i;
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[i]);
+			printf("\t");
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[mjpgSize-(4-i)]);
+			printf("\t");
+			printf("size=%d\n", BufferSize);
+
+			OneShot = false;
+		}
+		return 0;
+#endif
 	}
 };
 
@@ -226,7 +265,7 @@ HRESULT InitMonikers()
 		//比较是否是要使用的设备
 		//TRACE("Device path: %S\n", var.bstrVal);
 		std::string devpath = std::string(W2A(var.bstrVal));
-		if (devpath.find("vid_06f8&pid_3015") == -1)
+		if (devpath.find("vid_1d6b&pid_0102") == -1)
 		{
 			VariantClear(&var);
 			pMonikerVideo->Release();
@@ -361,13 +400,21 @@ HRESULT CaptureVideo()
 		CB->Height = vih->bmiHeader.biHeight;
 	}
 
+	//设置预览开始后调用的回调函数 0-SampleCB 1-BufferCB
+	hr = pSampleGrabber->SetCallback(CB, 1);
+	if (FAILED(hr))
+	{
+		printf("set preview video call back failed\n");
+	}
+
+/*
 	//设置触发抓拍后，调用的回调函数 0-调用SampleCB 1-BufferCB
 	hr = pSampleGrabberStill->SetCallback(CB, 1);
 	if (FAILED(hr))
 	{
 		printf("set still trigger call back failed\n");
 	}
-
+*/
 	//pVideoCaptureFilter->Release();
 
 	//设置预览窗口大小位置
@@ -383,7 +430,7 @@ HRESULT CaptureVideo()
 	else 
 		psCurrent = Running;
 
-#if 1
+#if 0
 	IKsTopologyInfo *pInfo = NULL;
 	hr = pVideoCaptureFilter->QueryInterface(__uuidof(IKsTopologyInfo),(void **)&pInfo);
 	if (SUCCEEDED(hr))
