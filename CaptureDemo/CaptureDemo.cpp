@@ -19,8 +19,10 @@
 #pragma comment(lib,"strmiids.lib")
 #pragma comment(lib,"strmbase.lib")
 
-#define DEFAULT_VIDEO_WIDTH     640
-#define DEFAULT_VIDEO_HEIGHT    480
+#define DEFAULT_VIDEO_WIDTH     1280
+#define DEFAULT_VIDEO_HEIGHT    1024
+
+#define JM_TOF_DEPTHDATA_LENGTH		240*180*10
 
 // this object is a SEMI-COM object, and can only be created statically.
 
@@ -41,7 +43,6 @@ IBaseFilter *pGrabberStill = NULL;
 ISampleGrabber *pSampleGrabberStill = NULL;
 IBaseFilter *pNull = NULL;
 
-
 //抓拍回调
 class CSampleGrabberCB : public ISampleGrabberCB 
 {
@@ -53,6 +54,13 @@ public:
 	HANDLE BufferEvent;
 	LONGLONG prev, step;
 	DWORD lastTime;
+
+	bool OneShot = true;
+
+	int u32FrameCnt = 0;
+	int t1;
+	int u32lastTime = 0;
+
 	// Fake out any COM ref counting
 	STDMETHODIMP_(ULONG) AddRef() { return 2; }
 	STDMETHODIMP_(ULONG) Release() { return 1; }
@@ -60,6 +68,7 @@ public:
 	CSampleGrabberCB()
 	{
 		lastTime =0;
+		t1 = (int)GetTickCount();
 	}
 	// Fake out any COM QI'ing
 	STDMETHODIMP QueryInterface(REFIID riid, void ** ppv)
@@ -82,13 +91,81 @@ public:
 
 	STDMETHODIMP BufferCB( double SampleTime, BYTE * pBuffer, long BufferSize )
 	{
-		//TODO 数据格式为YUY2，需要转换
-		char FileName[256];
-		sprintf_s(FileName, "capture_%d.yuv", (int)GetTickCount());
-		FILE * out = fopen(FileName, "wb");
-		fwrite(pBuffer, 1, BufferSize, out);
-		fclose(out);
+#if 0
+		int i;
+		for (i = 0; i < 4; i++)
+			printf("%02x ", pBuffer[i]);
+		printf("\t");
+		for (i = 0; i < 4; i++)
+			printf("%02x ", pBuffer[JM_TOF_DEPTHDATA_LENGTH+i]);
+		printf("\t");
+		printf("size=%d\n", BufferSize);
 		return 0;
+#else
+		u32FrameCnt++;
+
+		if (u32FrameCnt % 200 == 0)
+		{
+			t1 = (int)GetTickCount();
+		}
+
+		if (u32FrameCnt % 200 == 199)
+		{
+			printf("fps %.2f\n", 1000.0 / ((GetTickCount() - t1) / 200.0)); //  1s/(cost time/200)
+		}
+
+		u32lastTime = (int)GetTickCount();
+
+		if (OneShot)
+		{
+			char FileName[256];
+			FILE* out;
+			int mjpgSize = BufferSize - JM_TOF_DEPTHDATA_LENGTH;
+
+#if 1	//数据格式: MJPG+TOF
+			sprintf_s(FileName, "capture_%d.jpg", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer, 1, mjpgSize, out);
+			fclose(out);
+
+			sprintf_s(FileName, "capture_tof_%d.rgb", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer+ mjpgSize, 1, JM_TOF_DEPTHDATA_LENGTH, out);
+			fclose(out);
+
+			int i;
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[i]);
+			printf("\t");
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[mjpgSize-(4-i)]);
+			printf("\t");
+			printf("size=%d\n", BufferSize);
+#else	//数据格式: TOF+MJPG
+			sprintf_s(FileName, "capture_tof_%d.rgb", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer, 1, JM_TOF_DEPTHDATA_LENGTH, out);
+			fclose(out);
+
+			sprintf_s(FileName, "capture_%d.jpg", (int)GetTickCount());
+			out = fopen(FileName, "wb");
+			fwrite(pBuffer+JM_TOF_DEPTHDATA_LENGTH, 1, mjpgSize, out);
+			fclose(out);
+
+			int i;
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[JM_TOF_DEPTHDATA_LENGTH+i]);
+			printf("\t");
+			for (i = 0; i < 4; i++)
+				printf("%02x ", pBuffer[BufferSize - (4 - i)]);
+			printf("\t");
+			printf("size=%d\n", BufferSize);
+#endif
+
+			OneShot = false;
+		}
+		return 0;
+#endif
 	}
 };
 
@@ -143,6 +220,7 @@ HRESULT GetInterfaces(void)
 	if (FAILED(hr)) 
 		return hr;
 
+#if 0
 	//创建用于抓拍的Sample Grabber Filter.
 	hr = CoCreateInstance(CLSID_SampleGrabber, NULL, CLSCTX_INPROC_SERVER,IID_IBaseFilter, (void**)&pGrabberStill);
 	if (FAILED(hr))
@@ -157,6 +235,8 @@ HRESULT GetInterfaces(void)
 	hr = CoCreateInstance(CLSID_NullRenderer,NULL,CLSCTX_INPROC_SERVER,IID_IBaseFilter,(void**)&pNull);
 	if (FAILED(hr))
 		return hr;
+#endif
+
 	return hr;
 }
 
@@ -226,7 +306,7 @@ HRESULT InitMonikers()
 		//比较是否是要使用的设备
 		//TRACE("Device path: %S\n", var.bstrVal);
 		std::string devpath = std::string(W2A(var.bstrVal));
-		if (devpath.find("vid_06f8&pid_3015") == -1)
+		if (devpath.find("vid_1d6b&pid_0102") == -1)
 		{
 			VariantClear(&var);
 			pMonikerVideo->Release();
@@ -317,6 +397,7 @@ HRESULT CaptureVideo()
 		return hr;
 	}
 
+#if 0
 	//加入DirectShow中自带的SampleGrabber Filter
 	hr = pGraphBuilder->AddFilter(pGrabberStill, L"Still Sample Grabber");
 	if (FAILED(hr))
@@ -345,6 +426,7 @@ HRESULT CaptureVideo()
 	//configure the Sample Grabber so that it buffers samples :
 	hr = pSampleGrabberStill->SetOneShot(FALSE);
 	hr = pSampleGrabberStill->SetBufferSamples(TRUE);
+#endif
 
 	//获取设备输出格式信息
 	AM_MEDIA_TYPE mt;
@@ -361,13 +443,21 @@ HRESULT CaptureVideo()
 		CB->Height = vih->bmiHeader.biHeight;
 	}
 
+	//设置预览开始后调用的回调函数 0-SampleCB 1-BufferCB
+	hr = pSampleGrabber->SetCallback(CB, 1);
+	if (FAILED(hr))
+	{
+		printf("set preview video call back failed\n");
+	}
+
+#if 0
 	//设置触发抓拍后，调用的回调函数 0-调用SampleCB 1-BufferCB
 	hr = pSampleGrabberStill->SetCallback(CB, 1);
 	if (FAILED(hr))
 	{
 		printf("set still trigger call back failed\n");
 	}
-
+#endif
 	//pVideoCaptureFilter->Release();
 
 	//设置预览窗口大小位置
@@ -383,7 +473,7 @@ HRESULT CaptureVideo()
 	else 
 		psCurrent = Running;
 
-#if 1
+#if 0
 	IKsTopologyInfo *pInfo = NULL;
 	hr = pVideoCaptureFilter->QueryInterface(__uuidof(IKsTopologyInfo),(void **)&pInfo);
 	if (SUCCEEDED(hr))
